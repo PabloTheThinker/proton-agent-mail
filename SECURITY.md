@@ -30,6 +30,16 @@ Bridge on **loopback only**.
 18. Message headers are RFC 2047 encoded, so a display name or subject cannot smuggle raw bytes into a header.
 19. `PROTON_AGENT_FOLDERS` limits every route to a set of folders (403 outside it, first entry is the default, exact matching). The agent cannot widen it; it is service configuration.
 20. `PROTON_AGENT_READONLY=1` blocks send, reply, label changes and `mark_read`, so a read-only agent cannot delete or alter mail through this API.
+21. Attachment bytes are served only for a `clean` scan, as `application/octet-stream` + `nosniff`; infected, policy-blocked, oversized or unscannable files return an error and no bytes.
+
+## Attachment content is untrusted
+
+Attachment bytes are attacker-controlled in the same way message bodies are. The quarantine scan catches malware and dangerous types; it cannot tell whether a clean PDF contains text written to steer a model. So:
+
+- List responses never include attachment content, only metadata, and bodies are a second call, as with messages.
+- Bytes are served as `application/octet-stream` with `nosniff`, never as the sender's declared type, and only after a clean scan.
+- Whatever reads an attachment should treat its text as data, not instructions: no tool use or sending driven by what a document says, and a `PROTON_AGENT_READONLY=1` service so a steered agent still cannot alter or send mail.
+- Scope the agent to the folders it needs (`PROTON_AGENT_FOLDERS`) so a hostile document can only reach the slice it was filed in.
 
 ## Attachment quarantine
 

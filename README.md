@@ -114,6 +114,7 @@ agent  --Bearer------>  proton-agent-mail   127.0.0.1:18765
 | GET | `/inboxes/{id}/messages` | yes |
 | GET | `/inboxes/{id}/messages/{id}` | yes |
 | GET | `/inboxes/{id}/messages/{id}/attachments` | yes |
+| GET | `/inboxes/{id}/messages/{id}/attachments/{n}` | yes |
 | POST | `/inboxes/{id}/messages/{id}/attachments/fetch` | yes |
 | GET | `/inboxes/{id}/threads` | yes |
 | GET | `/quarantine/status` | yes |
@@ -150,6 +151,18 @@ Replies read the original's real headers: they answer from the address the messa
 ### When Bridge pushes back
 
 Bridge answers a burst of failed sends with `554 Too many failed send attempts` and then refuses every sender for minutes. So: one send is one SMTP attempt; a lockout opens a shared breaker and the API answers `503` with `Retry-After`; a refused recipient is remembered for 24 hours and answered `422` instead of being retried. Failed sends leave drafts in Bridge, so a pile of identical drafts means something is retrying.
+
+Download one attachment's bytes. It is exported in memory, written to the quarantine, scanned, and served only if it came back `clean`:
+
+```
+GET /inboxes/default/messages/42/attachments/0?folder=INBOX
+```
+
+- The listing (`GET .../attachments`) returns `[{index, filename, content_type, size, inline}]`. `filename` is already sanitised; the sender's raw name never reaches the filesystem.
+- The response is always `application/octet-stream` with `nosniff` and `attachment` disposition, never the sender's declared type. `X-Attachment-Scan` and `X-Attachment-Sha256` say what was checked.
+- A refused file is never served: `422` (infected or blocked by policy), `413` (over `PROTON_AGENT_ATTACH_MAX_BYTES`, default 25 MiB), `502` (scanner failed), `404` (no such index).
+- The folder scope applies, so an out-of-scope folder is `403` before anything is fetched.
+- Treat the bytes as hostile. A PDF in an agent's context is a prompt-injection vector, like a message body; see [SECURITY.md](SECURITY.md).
 
 Fetch inbound attachments into quarantine → ClamAV → `clean/` only if safe:
 
