@@ -82,6 +82,8 @@ proton-agent-mail token     # mint a bearer; do not commit it
 | `PROTON_AGENT_BIND` | `127.0.0.1` |
 | `PROTON_AGENT_BRIDGE_FILE` | Bridge login, JSON `{user, password}`, mode 0600 (default `~/.config/proton-agent-mail/bridge.json`) |
 | `PROTON_AGENT_SEND_AS` | Allowed senders, `Name <a@x>;Name <b@x>`; first is the default. An explicit `from` outside the list returns 400 |
+| `PROTON_AGENT_FOLDERS` | Folders the agent may touch, e.g. `Jobs,Receipts`. Unset = every folder. The first entry is the default folder. Anything else returns 403 |
+| `PROTON_AGENT_READONLY` | `1` blocks send, reply, label changes and `mark_read` with 403 (reading and attachment fetch still work) |
 | `PROTON_AGENT_STATE` | State dir (events, refused recipients, send breaker) |
 | `PROTON_AGENT_BREAKER` | Path of the shared send-breaker file |
 | `PROTON_BRIDGE_HOST` / `PROTON_BRIDGE_IMAP_PORT` / `PROTON_BRIDGE_SMTP_PORT` | Loopback only (defaults `127.0.0.1`, `1143`, `1025`) |
@@ -134,6 +136,16 @@ Send with attachments (paths or base64). Each file is scanned before SMTP:
 ```
 
 Replies read the original's real headers: they answer from the address the message was written to (if it is in `PROTON_AGENT_SEND_AS`), go to `Reply-To` first, and carry `In-Reply-To` and `References` so threads link.
+
+### Handing an agent a slice of a mailbox
+
+`PROTON_AGENT_FOLDERS=Jobs,Receipts` pins what the agent can reach, and `PROTON_AGENT_READONLY=1` takes away everything that changes the mailbox. Together they make "this agent may read the `Jobs` folder and nothing else" expressible.
+
+- Every route that takes a folder enforces the scope: list, read, threads, attachments, reply, label changes, and the new-mail watcher. An out-of-scope folder returns `403 folder_forbidden` (not 404), so the boundary is visible in logs.
+- A call with no `folder` uses the **first** listed folder, never silently `INBOX`.
+- `GET /inboxes` advertises `folders`, `default_folder` and `read_only`, so an agent can learn its own scope instead of probing.
+- Names are matched exactly (IMAP folder names are case-sensitive; only `INBOX` is folded). A malformed value stops the service at startup.
+- Message ids only mean something inside one folder, so reads, replies and label changes carry the folder too.
 
 ### When Bridge pushes back
 

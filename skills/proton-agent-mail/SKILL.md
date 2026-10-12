@@ -79,6 +79,10 @@ Default inbox id: `default`. Send JSON: `{"to":"a@b.com","subject":"Hi","text":"
 
 If Bridge is not installed: setup exits 2 with the official download URL. Do not invent an unofficial installer.
 
+## Scoping an agent
+
+To give an agent only part of a mailbox, set `PROTON_AGENT_FOLDERS=Jobs,Receipts` (first entry is the default folder) and, if it should never change mail, `PROTON_AGENT_READONLY=1`. Out-of-scope folders return 403 `folder_forbidden`; `GET /inboxes` tells the agent its own scope. Always pass `?folder=` explicitly when you work in more than one folder, because ids are per-folder.
+
 ## Pitfalls
 
 - `503` with `Retry-After` means Bridge is refusing sends (`554 Too many failed send attempts`). Wait; do not retry in a loop, every retry extends it.

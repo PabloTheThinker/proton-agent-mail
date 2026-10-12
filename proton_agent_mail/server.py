@@ -32,6 +32,8 @@ from .events import EventBus, from_env as events_from_env
 from .bridge import BridgeClient, BridgeLockout, MailError, RecipientRefused, SendBreaker
 from .scan import default_quarantine_root, ensure_dirs
 from .security import (
+    FolderForbidden,
+    FolderScope,
     assert_bridge_loopback,
     assert_config_private,
     default_bind,
@@ -42,7 +44,7 @@ from .security import (
     token_ok,
 )
 
-API_VERSION = "0.4.0"
+API_VERSION = "0.6.0"
 
 LABEL_TO_FLAG = {"read": ("seen", True), "unread": ("seen", False), "replied": ("answered", True), "starred": ("flagged", True), "flagged": ("flagged", True)}
 
@@ -148,6 +150,8 @@ class AgentHandler(BaseHTTPRequestHandler):
     inbox_id = "default"
     from_addr = "agent@localhost"
     send_as: dict[str, str] = {}
+    scope: FolderScope = FolderScope()
+    read_only: bool = False
 
     def log_message(self, fmt: str, *args: Any) -> None:
         msg = redact(fmt % args)
@@ -174,6 +178,18 @@ class AgentHandler(BaseHTTPRequestHandler):
             return None, "invalid json"
         return data, None
 
+    def _folder(self, requested: str | None) -> str:
+        return self.scope.resolve(requested)
+
+    def _deny_read_only(self, what: str) -> bool:
+        if self.read_only:
+            _json(self, 403, {"error": "read_only", "message": f"{what} is disabled: this service is read-only"})
+            return True
+        return False
+
+    def _folder_denied(self, e: FolderForbidden) -> None:
+        _json(self, 403, {"error": "folder_forbidden", "message": str(e), "allowed_folders": self.scope.advertise()})
+
     def _inbox_payload(self) -> dict[str, Any]:
         return {
             "inboxes": [
@@ -183,6 +199,9 @@ class AgentHandler(BaseHTTPRequestHandler):
                     "inbox_id": self.inbox_id,
                     "provider": "proton-bridge",
                     "agentmail_compatible": True,
+                    "folders": self.scope.advertise(),  # None = every folder
+                    "default_folder": self.scope.default,
+                    "read_only": self.read_only,
                 }
             ]
         }
@@ -264,6 +283,8 @@ class AgentHandler(BaseHTTPRequestHandler):
                     "send_breaker": SendBreaker().load()["state"],
                     "inbox": self.inbox_id,
                     "attachments": True,
+                    "folder_scope": self.scope.advertise(),
+                    "read_only": self.read_only,
                     "quarantine": qroot,
                     "version": API_VERSION,
                     "agentmail_compatible": True,
@@ -297,7 +318,7 @@ class AgentHandler(BaseHTTPRequestHandler):
             if path == f"/inboxes/{self.inbox_id}/messages":
                 n = int((qs.get("limit") or qs.get("page_size") or ["20"])[0])
                 n = max(1, min(n, 50))
-                folder = (qs.get("folder") or ["INBOX"])[0]
+                folder = self._folder((qs.get("folder") or [""])[0])
                 items = _normalize_envelopes(self.mail.envelopes(n=n, folder=folder))
                 # optional filters (agent-side convenience)
                 unread_only = (qs.get("unread") or [""])[0].lower() in {"1", "true", "yes"}
@@ -327,7 +348,7 @@ class AgentHandler(BaseHTTPRequestHandler):
             if path.startswith(prefix_att) and path.endswith("/attachments"):
                 mid = path[len(prefix_att) : -len("/attachments")]
                 mid = mid.strip("/")
-                folder = (qs.get("folder") or ["INBOX"])[0]
+                folder = self._folder((qs.get("folder") or [""])[0])
                 items = self.attachments.list_attachments(mid, folder=folder)
                 _json(
                     self,
@@ -347,12 +368,16 @@ class AgentHandler(BaseHTTPRequestHandler):
                     return
                 # AgentMail semantics: GET does not change read state unless mark_read=1
                 mark = (qs.get("mark_read") or [""])[0].lower() in {"1", "true", "yes"}
-                text = self.mail.read(sanitize_message_id(mid), preview=not mark)
+                if mark and self._deny_read_only("mark_read"):
+                    return
+                folder = self._folder((qs.get("folder") or [""])[0])
+                text = self.mail.read(sanitize_message_id(mid), preview=not mark, folder=folder)
                 _json(
                     self,
                     200,
                     {
                         "message_id": mid,
+                        "folder": folder,
                         "marked_read": mark,
                         "inbox_id": self.inbox_id,
                         "text": text,
@@ -363,7 +388,8 @@ class AgentHandler(BaseHTTPRequestHandler):
             if path == f"/inboxes/{self.inbox_id}/threads":
                 n = int((qs.get("limit") or ["20"])[0])
                 n = max(1, min(n, 50))
-                items = _normalize_envelopes(self.mail.envelopes(n=n))
+                folder = self._folder((qs.get("folder") or [""])[0])
+                items = _normalize_envelopes(self.mail.envelopes(n=n, folder=folder))
                 _json(
                     self,
                     200,
@@ -399,6 +425,9 @@ class AgentHandler(BaseHTTPRequestHandler):
                     },
                 )
                 return
+        except FolderForbidden as e:
+            self._folder_denied(e)
+            return
         except BridgeLockout as e:
             _json(self, 503, {"error": "bridge_lockout", "message": str(e), "retry_after": e.retry_after}, {"Retry-After": str(e.retry_after)})
         except RecipientRefused as e:
@@ -430,7 +459,7 @@ class AgentHandler(BaseHTTPRequestHandler):
             prefix = f"/inboxes/{self.inbox_id}/messages/"
             if path.endswith("/attachments/fetch") and path.startswith(prefix):
                 mid = path[len(prefix) : -len("/attachments/fetch")].strip("/")
-                folder = data.get("folder") or "INBOX"
+                folder = self._folder(data.get("folder"))
                 indexes = data.get("indexes")
                 if indexes is not None and not isinstance(indexes, list):
                     _json(self, 400, {"error": "indexes must be a list of ints"})
@@ -446,10 +475,13 @@ class AgentHandler(BaseHTTPRequestHandler):
 
             # AgentMail-style reply
             if path.startswith(prefix) and path.endswith("/reply"):
+                if self._deny_read_only("reply"):
+                    return
                 mid = path[len(prefix) : -len("/reply")].strip("/")
+                folder = self._folder(data.get("folder"))
                 text = str(data.get("text") or data.get("body") or "")
                 # real headers of the original: who it was written to, its Message-ID, its thread
-                oh = self.mail.headers(sanitize_message_id(mid))
+                oh = self.mail.headers(sanitize_message_id(mid), folder=folder)
                 subj = str(data.get("subject") or "")
                 if not subj:
                     base = oh["subject"] or "your message"
@@ -471,7 +503,7 @@ class AgentHandler(BaseHTTPRequestHandler):
                 result = self._send_message(payload, original_recipients=oh["recipients"])
                 result["replied_to"] = mid
                 try:  # AgentMail parity: replied thread is labelled
-                    self.mail.flag(mid, ["answered", "seen"], add=True)
+                    self.mail.flag(mid, ["answered", "seen"], add=True, folder=folder)
                 except MailError:
                     pass
                 _json(self, 200, result)
@@ -485,9 +517,13 @@ class AgentHandler(BaseHTTPRequestHandler):
             if path not in send_paths:
                 _json(self, 404, {"error": "not found", "path": path})
                 return
+            if self._deny_read_only("send"):
+                return
 
             result = self._send_message(data)
             _json(self, 200, result)
+        except FolderForbidden as e:
+            self._folder_denied(e)
         except BridgeLockout as e:
             _json(self, 503, {"error": "bridge_lockout", "message": str(e), "retry_after": e.retry_after}, {"Retry-After": str(e.retry_after)})
         except RecipientRefused as e:
@@ -508,6 +544,8 @@ class AgentHandler(BaseHTTPRequestHandler):
         """
         if not self._auth():
             return
+        if self._deny_read_only("label changes"):
+            return
         path = _norm_path(urlparse(self.path).path)
         prefix = f"/inboxes/{self.inbox_id}/messages/"
         if not path.startswith(prefix):
@@ -525,6 +563,7 @@ class AgentHandler(BaseHTTPRequestHandler):
         applied, ignored = [], []
         try:
             mid = sanitize_message_id(mid)
+            folder = self._folder(data.get("folder") or (parse_qs(urlparse(self.path).query).get("folder") or [""])[0])
             for key, sign in (("add_labels", True), ("remove_labels", False)):
                 for lab in data.get(key) or []:
                     m = LABEL_TO_FLAG.get(str(lab).lower())
@@ -533,8 +572,11 @@ class AgentHandler(BaseHTTPRequestHandler):
                         continue
                     flag, pos = m
                     add = pos if sign else not pos
-                    self.mail.flag(mid, [flag], add=add)
+                    self.mail.flag(mid, [flag], add=add, folder=folder)
                     applied.append({"label": lab, "flag": flag, "set": add})
+        except FolderForbidden as e:
+            self._folder_denied(e)
+            return
         except BridgeLockout as e:
             _json(self, 503, {"error": "bridge_lockout", "message": str(e), "retry_after": e.retry_after}, {"Retry-After": str(e.retry_after)})
         except RecipientRefused as e:
@@ -545,7 +587,7 @@ class AgentHandler(BaseHTTPRequestHandler):
         except (RuntimeError, ValueError) as e:
             _json(self, 400, {"error": str(e)})
             return
-        _json(self, 200, {"ok": True, "message_id": mid, "applied": applied, "ignored": ignored})
+        _json(self, 200, {"ok": True, "message_id": mid, "folder": folder, "applied": applied, "ignored": ignored})
 
 
 def serve(host: str | None = None, port: int | None = None) -> None:
@@ -565,8 +607,11 @@ def serve(host: str | None = None, port: int | None = None) -> None:
     AgentHandler.inbox_id = os.environ.get("PROTON_AGENT_INBOX", "default")
     AgentHandler.from_addr = os.environ.get("PROTON_AGENT_FROM", "agent@localhost")
     AgentHandler.send_as = parse_send_as(os.environ.get("PROTON_AGENT_SEND_AS", ""))
+    AgentHandler.scope = FolderScope.from_env()  # a malformed scope stops the service here, before it listens
+    AgentHandler.read_only = os.environ.get("PROTON_AGENT_READONLY", "").lower() in {"1", "true", "yes"}
+    watch_folder = AgentHandler.scope.default  # the new-mail watcher must stay inside the scope too
     AgentHandler.events = events_from_env(
-        lambda: _normalize_envelopes(him.envelopes(n=40)), AgentHandler.inbox_id
+        lambda: _normalize_envelopes(him.envelopes(n=40, folder=watch_folder)), AgentHandler.inbox_id
     )
     AgentHandler.events.start()
     ensure_dirs()  # create quarantine tree on boot
@@ -574,7 +619,8 @@ def serve(host: str | None = None, port: int | None = None) -> None:
     print(
         f"proton-agent-mail {API_VERSION} on {host}:{port} "
         f"inbox={AgentHandler.inbox_id} agentmail=on attachments=on "
-        f"events={'watch' if AgentHandler.events.interval > 0 else 'off'}",
+        f"events={'watch' if AgentHandler.events.interval > 0 else 'off'} "
+        f"folders={','.join(AgentHandler.scope.folders) or 'all'} read_only={AgentHandler.read_only}",
         flush=True,
     )
     httpd.serve_forever()

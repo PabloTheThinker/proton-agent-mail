@@ -158,7 +158,7 @@ class AttachmentService:
             except MailError:
                 pass
         # Fallback: read text placeholders
-        text = self.him.read(mid)
+        text = self.him.read(mid, folder=folder)
         return list_from_read_text(text)
 
     def fetch_and_scan(
