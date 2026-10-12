@@ -27,7 +27,7 @@ It is not a Proton product, a hosted inbox service, or a way around Bridge. It i
 - [Security](#security)
 - [Agent skill](#agent-skill)
 - [Development](#development)
-- [Contributing](#contributing) · [License](#license)
+- [Contributing](#contributing) · [Contributors](#contributors) · [License](#license)
 
 ## Why
 
@@ -301,6 +301,13 @@ The tests include real HTTP requests against the handler with a recording mail c
 ## Contributing
 
 Issues and pull requests are welcome. Please keep operator paths, tokens and mailbox contents out of anything you submit, and read [SECURITY.md](SECURITY.md) before filing something that might contain credentials. Run the tests and the audit script before opening a pull request.
+
+## Contributors
+
+| | |
+|---|---|
+| **Pablo Navarro** ([@PabloTheThinker](https://github.com/PabloTheThinker)) | Author and maintainer |
+| **Tom Price** ([@tfp1](https://github.com/tfp1)) | Audit and design work behind [folder scoping and read-only mode](https://github.com/PabloTheThinker/proton-agent-mail/issues/3), [attachment support](https://github.com/PabloTheThinker/proton-agent-mail/issues/4), and the header-encoding and input-validation fixes in [PR #1](https://github.com/PabloTheThinker/proton-agent-mail/pull/1) |
 
 ## License
 
