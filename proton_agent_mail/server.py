@@ -91,6 +91,25 @@ def _json(handler: BaseHTTPRequestHandler, code: int, payload: Any, headers: dic
     handler.wfile.write(body)
 
 
+def _bytes(handler: BaseHTTPRequestHandler, data: bytes, filename: str, meta: dict[str, str]) -> None:
+    """Serve attachment bytes. The content type is always octet-stream: the declared type came from the sender."""
+    handler.send_response(200)
+    handler.send_header("Content-Type", "application/octet-stream")
+    handler.send_header("Content-Length", str(len(data)))
+    handler.send_header("Content-Disposition", f'attachment; filename="{filename}"')  # filename is safe_filename()'d
+    handler.send_header("X-Content-Type-Options", "nosniff")
+    handler.send_header("Cache-Control", "no-store")
+    handler.send_header("X-Proton-Agent-Mail", API_VERSION)
+    for k, v in meta.items():
+        handler.send_header(k, v)
+    handler.end_headers()
+    handler.wfile.write(data)
+
+
+# scan status -> HTTP status for a refused attachment
+_REFUSED_STATUS = {"oversized": 413, "infected": 422, "blocked_policy": 422, "scan_error": 502}
+
+
 def _norm_path(path: str) -> str:
     """Strip optional /v0|/v1 AgentMail-style prefix; collapse //. """
     p = path or "/"
@@ -355,6 +374,25 @@ class AgentHandler(BaseHTTPRequestHandler):
                     200,
                     {"message_id": mid, "folder": folder, "count": len(items), "attachments": items},
                 )
+                return
+            m_att = re.fullmatch(r"(?P<mid>[^/]+)/attachments/(?P<n>\d{1,4})", path[len(prefix_att) :]) if path.startswith(prefix_att) else None
+            if m_att:
+                # Bytes of ONE attachment, only after it passed the quarantine scan. The agent never needs
+                # filesystem access, and a blocked file is never served.
+                mid = sanitize_message_id(m_att["mid"])
+                folder = self._folder((qs.get("folder") or [""])[0])
+                result = self.attachments.fetch_and_scan(mid, folder=folder, indexes=[int(m_att["n"])])
+                if not result["attachments"]:
+                    _json(self, 404, {"error": "no such attachment", "message_id": mid, "index": int(m_att["n"])})
+                    return
+                item = result["attachments"][0]
+                if not item.get("ok") or not item.get("path"):
+                    _json(self, _REFUSED_STATUS.get(item.get("status"), 422),
+                          {"error": "attachment_blocked", "status": item.get("status"), "detail": item.get("detail"),
+                           "filename": item.get("filename"), "reasons": item.get("reasons", [])})
+                    return
+                _bytes(self, Path(item["path"]).read_bytes(), item["filename"],
+                       {"X-Attachment-Sha256": str(item.get("sha256")), "X-Attachment-Scan": f"{item.get('status')}; {item.get('backend')}"})
                 return
             if path.startswith(prefix_att):
                 mid = path[len(prefix_att) :]
