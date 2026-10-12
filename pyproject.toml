@@ -1,12 +1,12 @@
 [project]
 name = "proton-agent-mail"
-version = "0.1.0"
+version = "0.4.0"
 description = "Local AgentMail-shaped API for Proton Mail. User logs into Bridge; the agent does the rest."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [{ name = "Pablo Navarro" }]
-keywords = ["protonmail", "proton-bridge", "himalaya", "agentmail", "ai-agents", "email"]
+keywords = ["protonmail", "proton-bridge", "agentmail", "ai-agents", "email"]
 classifiers = [
   "License :: OSI Approved :: MIT License",
   "Programming Language :: Python :: 3",
