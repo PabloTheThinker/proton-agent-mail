@@ -1,6 +1,6 @@
 [project]
 name = "proton-agent-mail"
-version = "0.4.0"
+version = "0.6.0"
 description = "Local AgentMail-shaped API for Proton Mail. User logs into Bridge; the agent does the rest."
 readme = "README.md"
 requires-python = ">=3.11"
