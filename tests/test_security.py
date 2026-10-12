@@ -4,8 +4,6 @@ from pathlib import Path
 import tempfile
 
 from proton_agent_mail.security import (
-    MIN_HIMALAYA,
-    parse_himalaya_version,
     redact,
     token_ok,
     extract_bearer,
@@ -13,16 +11,10 @@ from proton_agent_mail.security import (
     new_token,
     sanitize_folder,
     sanitize_message_id,
-    himalaya_child_env,
-    assert_himalaya_bridge_hosts,
 )
 
 
 class SecurityTests(unittest.TestCase):
-    def test_parse_version(self):
-        self.assertEqual(parse_himalaya_version("himalaya v1.2.0 +imap"), (1, 2, 0))
-        self.assertLess(parse_himalaya_version("v1.1.0"), MIN_HIMALAYA)
-
     def test_token_compare(self):
         t = new_token()
         self.assertTrue(token_ok(t, t))
@@ -45,13 +37,6 @@ class SecurityTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             sanitize_message_id("; rm -rf /")
 
-    def test_child_env_strips_token(self):
-        import os
-
-        os.environ["PROTON_AGENT_TOKEN"] = "should-not-leak"
-        env = himalaya_child_env()
-        self.assertNotIn("PROTON_AGENT_TOKEN", env)
-
     def test_bind_loopback(self):
         import os
 
@@ -61,23 +46,6 @@ class SecurityTests(unittest.TestCase):
         os.environ["PROTON_AGENT_BIND"] = "0.0.0.0"
         with self.assertRaises(RuntimeError):
             default_bind()
-
-    def test_himalaya_hosts_loopback_only(self):
-        with tempfile.TemporaryDirectory() as td:
-            p = Path(td) / "config.toml"
-            p.write_text(
-                'backend.host = "127.0.0.1"\n'
-                'message.send.backend.host = "localhost"\n',
-                encoding="utf-8",
-            )
-            assert_himalaya_bridge_hosts(p)
-            p.write_text(
-                'backend.host = "10.0.0.5"\n'
-                'message.send.backend.host = "127.0.0.1"\n',
-                encoding="utf-8",
-            )
-            with self.assertRaises(RuntimeError):
-                assert_himalaya_bridge_hosts(p)
 
 
 if __name__ == "__main__":

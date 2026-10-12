@@ -10,7 +10,6 @@ import shutil
 import subprocess
 from pathlib import Path
 
-MIN_HIMALAYA = (1, 2, 0)
 SECRET_RE = re.compile(
     r"(auth\.raw\s*=\s*).+|"
     r"password['\"]?\s*[:=]\s*['\"]?[^'\"\s]+|"
@@ -20,43 +19,9 @@ SECRET_RE = re.compile(
     re.I,
 )
 
-# Himalaya may only hop to Bridge on loopback.
-_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1", "[::1]"})
-_HOST_LINE = re.compile(
-    r"(?im)^(?:backend|message\.send\.backend)\.host\s*=\s*\"?([^\"\n#]+)\"?"
-)
-
 
 def redact(text: str) -> str:
     return SECRET_RE.sub("[redacted]", text or "")
-
-
-def parse_himalaya_version(raw: str) -> tuple[int, int, int] | None:
-    m = re.search(r"v?(\d+)\.(\d+)\.(\d+)", raw or "")
-    if not m:
-        return None
-    return int(m.group(1)), int(m.group(2)), int(m.group(3))
-
-
-def require_himalaya_version(binary: str = "himalaya") -> tuple[int, int, int]:
-    path = shutil.which(binary)
-    if not path:
-        raise RuntimeError("himalaya not found on PATH — install v1.2.0+")
-    try:
-        out = subprocess.check_output(
-            [path, "--version"], text=True, timeout=8, stderr=subprocess.STDOUT
-        )
-    except (OSError, subprocess.SubprocessError) as e:
-        raise RuntimeError(f"himalaya --version failed: {e}") from e
-    ver = parse_himalaya_version(out)
-    if ver is None:
-        raise RuntimeError(f"could not parse himalaya version from: {out[:80]!r}")
-    if ver < MIN_HIMALAYA:
-        raise RuntimeError(
-            f"himalaya {ver[0]}.{ver[1]}.{ver[2]} is too old; "
-            "Proton Bridge AUTH requires 1.2.0+ (1.1 hangs on PLAIN continuation)"
-        )
-    return ver
 
 
 def new_token() -> str:
@@ -128,14 +93,6 @@ def sanitize_message_id(mid: str) -> str:
     return mid
 
 
-def himalaya_child_env() -> dict[str, str]:
-    """Do not leak the agent bearer into the IMAP child."""
-    keep = ("PATH", "HOME", "LANG", "LC_ALL", "XDG_CONFIG_HOME", "HIMALAYA_CONFIG")
-    out = {k: os.environ[k] for k in keep if os.environ.get(k)}
-    out.setdefault("PATH", "/usr/bin:/bin")
-    return out
-
-
 def assert_bridge_loopback() -> None:
     """Refuse to start if Bridge IMAP/SMTP is on a public interface."""
     try:
@@ -161,27 +118,3 @@ def assert_config_private(path: Path) -> None:
     mode = path.stat().st_mode & 0o777
     if mode & 0o077:
         raise RuntimeError(f"{path} must be mode 0600 or tighter")
-
-
-def assert_himalaya_bridge_hosts(path: Path) -> None:
-    """Refuse serve if Himalaya IMAP/SMTP host is not loopback.
-
-    Does not print config contents (may include auth.raw).
-    """
-    if not path.is_file():
-        return
-    try:
-        text = path.read_text(encoding="utf-8")
-    except OSError as e:
-        raise RuntimeError(f"cannot read himalaya config: {e}") from e
-    hosts = [m.group(1).strip() for m in _HOST_LINE.finditer(text)]
-    if not hosts:
-        # No host lines — leave to Himalaya; Bridge bind check still runs.
-        return
-    for host in hosts:
-        h = host.strip().lower().strip('"').strip("'")
-        if h not in _LOOPBACK_HOSTS:
-            raise RuntimeError(
-                "himalaya config points IMAP/SMTP off loopback — "
-                "set backend.host and message.send.backend.host to 127.0.0.1"
-            )

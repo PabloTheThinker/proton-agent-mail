@@ -1,16 +1,13 @@
-"""proton-agent-mail — AgentMail-shaped local API over Proton Bridge.
+"""proton-agent-mail: AgentMail-shaped local API over Proton Bridge.
 
 Security model
 --------------
 The *agent* authenticates with a bearer token.
-The *service* holds Proton Bridge credentials (via Himalaya config).
+The *service* holds the Proton Bridge login (a 0600 file) and talks to Bridge over loopback IMAP/SMTP
+with Python's own client (``proton_agent_mail.bridge``); there is no subprocess and no third-party mail client.
 The agent never sees the mailbox password.
-
-Himalaya 1.2+ is required (1.1 hangs / mishandles Bridge AUTH PLAIN).
 Bind 127.0.0.1 only unless explicitly overridden.
 """
 
-from .security import MIN_HIMALAYA, require_himalaya_version
-
-__version__ = "0.1.0"
-__all__ = ["MIN_HIMALAYA", "require_himalaya_version", "__version__"]
+__version__ = "0.5.0"
+__all__ = ["__version__"]
