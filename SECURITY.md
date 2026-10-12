@@ -28,6 +28,8 @@ Bridge on **loopback only**.
 16. Agent only receives filesystem paths under `clean/` for usable files — never execute them.
 17. Mail is sent only from addresses in `PROTON_AGENT_SEND_AS`; an explicit `from` outside it is rejected (HTTP 400) and nothing is sent.
 18. Message headers are RFC 2047 encoded, so a display name or subject cannot smuggle raw bytes into a header.
+19. `PROTON_AGENT_FOLDERS` limits every route to a set of folders (403 outside it, first entry is the default, exact matching). The agent cannot widen it; it is service configuration.
+20. `PROTON_AGENT_READONLY=1` blocks send, reply, label changes and `mark_read`, so a read-only agent cannot delete or alter mail through this API.
 
 ## Attachment quarantine
 
