@@ -50,16 +50,56 @@ def which_bridge() -> str | None:
     return str(p) if p.is_file() else None
 
 
-def bridge_cli(bridge: str, command: str, timeout: int = 20) -> str:
-    """One-shot CLI command. Never print the result (may contain IMAP password)."""
-    proc = subprocess.run(
-        [bridge, "-c"],
-        input=f"{command}\nexit\n",
-        text=True,
-        capture_output=True,
-        timeout=timeout,
-    )
-    return (proc.stdout or "") + "\n" + (proc.stderr or "")
+def _stop_noninteractive() -> None:
+    """Bridge allows one instance: a running --noninteractive Bridge holds the lock, so `-c` hangs."""
+    subprocess.run(["pkill", "-f", "bridge --noninteractive"], capture_output=True)
+    for _ in range(20):
+        if subprocess.run(["pgrep", "-f", "bridge --noninteractive"], capture_output=True).returncode:
+            return
+        time.sleep(0.5)
+
+
+def bridge_cli(bridge: str, command: str, timeout: int = 150, ready_wait: int = 45) -> str:
+    """One-shot CLI command. Never print the result (may contain IMAP password).
+
+    Fixes: stop any --noninteractive instance (lock), keep stdin open until the
+    shell is ready (startup + sync take ~45s; earlier input gets "User ... is currently locked"),
+    then retry while the user is locked.
+    """
+    import threading
+    _stop_noninteractive()
+    proc = subprocess.Popen([bridge, "-c"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT, text=True, bufsize=1)
+    out: list[str] = []
+    ready = threading.Event()
+    done = threading.Event()
+
+    def reader() -> None:
+        for line in proc.stdout:  # type: ignore[union-attr]
+            out.append(line)
+            low = line.lower()
+            if "sync has finished" in low:
+                ready.set()
+            if low.startswith("security:") and any("smtp settings" in l.lower() for l in out):
+                done.set()
+        done.set()
+
+    t = threading.Thread(target=reader, daemon=True)
+    t.start()
+    deadline = time.time() + timeout
+    try:
+        ready.wait(ready_wait)
+        time.sleep(2)
+        while time.time() < deadline and not done.is_set():
+            proc.stdin.write(command + "\n"); proc.stdin.flush()  # type: ignore[union-attr]
+            done.wait(10)
+        proc.stdin.write("exit\n"); proc.stdin.flush()  # type: ignore[union-attr]
+        proc.wait(timeout=15)
+    except (BrokenPipeError, subprocess.TimeoutExpired):
+        proc.kill()
+    if not done.is_set() and time.time() >= deadline:
+        raise subprocess.TimeoutExpired([bridge, "-c"], timeout)
+    return "".join(out)
 
 
 def write_bridge_credentials(email: str, username: str, password: str) -> Path:
@@ -104,7 +144,8 @@ def wait_for_login(bridge: str, timeout: int = 900, every: int = 4) -> dict[str,
     )
     deadline = time.time() + timeout
     while time.time() < deadline:
-        if port_up(1143) and port_up(1025):
+        # Ports are down while the CLI instance holds the lock, so `info` itself is the probe.
+        if True:
             try:
                 raw = bridge_cli(bridge, "info")
             except (subprocess.TimeoutExpired, OSError):
@@ -113,7 +154,9 @@ def wait_for_login(bridge: str, timeout: int = 900, every: int = 4) -> dict[str,
             parsed = parse_info(raw)
             if parsed["username"] and parsed["password"]:
                 print("LOGIN_ACCEPTED", flush=True)
+                start_bridge_noninteractive(bridge)
                 return parsed
+            start_bridge_noninteractive(bridge)
         time.sleep(every)
     raise RuntimeError("timed out waiting for Bridge login")
 

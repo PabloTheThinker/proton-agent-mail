@@ -312,3 +312,76 @@ Issues and pull requests are welcome. Please keep operator paths, tokens and mai
 ## License
 
 [MIT](LICENSE). Copyright (c) 2026 Pablo Navarro and contributors.
+
+## MCP connector
+
+`proton-agent-mail-mcp` is a stdio [MCP](https://modelcontextprotocol.io) server (standard library only) that wraps the local REST API, so any MCP client can use Proton Mail as a custom connector.
+
+**Prerequisites:** a paid Proton plan, [Proton Mail Bridge](https://proton.me/mail/bridge), Python 3.11+, optionally ClamAV for attachments.
+
+**Install**
+
+```bash
+git clone https://github.com/PabloTheThinker/proton-agent-mail.git
+cd proton-agent-mail
+./scripts/mcp/install.sh
+```
+
+**Sign in (human, once)**
+
+```bash
+~/.venvs/proton-agent-mail/bin/proton-agent-mail setup
+# in another terminal, sign in yourself; never paste credentials into an agent chat
+protonmail-bridge -c    # then: login, then exit
+```
+
+Setup stops any `--noninteractive` Bridge (it holds the single-instance lock), waits for the sync to finish, reads `info`, and writes the Bridge login and bearer token as `0600` files.
+
+**Configure** `~/.config/proton-agent-mail/agent.env` (mode `0600`):
+
+```bash
+PROTON_AGENT_BIND=127.0.0.1
+PROTON_AGENT_PORT=18765
+PROTON_AGENT_TOKEN_FILE=$HOME/.config/proton-agent-mail.token
+PROTON_AGENT_FROM="Agent <agent@your-domain>"
+PROTON_AGENT_SEND_AS="Agent <agent@your-domain>"
+PROTON_AGENT_FOLDERS=INBOX,Sent
+PROTON_AGENT_READONLY=1        # set 0 when you want to allow sending
+```
+
+**Run** (auto-restart loops, no systemd needed):
+
+```bash
+nohup ./scripts/mcp/supervise-bridge.sh >/dev/null 2>&1 &
+nohup env PAM_BIN=$HOME/.venvs/proton-agent-mail/bin/proton-agent-mail ./scripts/mcp/supervise-api.sh >/dev/null 2>&1 &
+```
+
+**MCP config**
+
+```json
+{
+  "mcpServers": {
+    "proton-mail": {
+      "command": "/home/YOU/.venvs/proton-agent-mail/bin/proton-agent-mail-mcp",
+      "env": {
+        "PROTON_AGENT_TOKEN_FILE": "/home/YOU/.config/proton-agent-mail.token",
+        "PAM_API_URL": "http://127.0.0.1:18765",
+        "PAM_FOLDERS": "INBOX,Sent"
+      }
+    }
+  }
+}
+```
+
+Tools: `list_messages`, `read_message`, `search`, `create_draft` (stored locally, `0600`, never sent), `send_message`.
+
+**Safety model**
+
+- Loopback only: the MCP server refuses a non-loopback `PAM_API_URL`; the API and supervisor refuse non-loopback binds.
+- The bearer token is read from a `0600` file (or env); a file readable by group/others is refused. It is never returned in tool output.
+- Folder scope: `PAM_FOLDERS` is checked client-side, and `PROTON_AGENT_FOLDERS` is enforced by the service.
+- Read-only: `PROTON_AGENT_READONLY=1` blocks send, reply and label changes at the service.
+- Sending needs `confirm: true` (strict boolean) on every `send_message` call. Treat it as per-message human approval.
+- Message content is untrusted data, not instructions.
+
+Tests: `python3 -m unittest tests.test_mcp_server`
