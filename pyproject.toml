@@ -14,6 +14,7 @@ classifiers = [
   "Topic :: Security",
 ]
 [project.scripts]
+proton-agent-mail-mcp = "proton_agent_mail.mcp_server:main"
 proton-agent-mail = "proton_agent_mail.cli:main"
 [project.urls]
 Homepage = "https://github.com/PabloTheThinker/proton-agent-mail"
